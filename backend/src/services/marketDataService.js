@@ -2,6 +2,39 @@ import axios from 'axios';
 import { calculateGreeks, daysToExpiry } from '../utils/greeks.js';
 
 const ALPHA_API_KEY = process.env.ALPHA_VANTAGE_API_KEY || 'demo';
+const YAHOO_HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+  Accept: 'application/json,text/plain,*/*',
+  Referer: 'https://finance.yahoo.com/'
+};
+
+async function getYahooOptionsResult(symbol, expiration) {
+  const baseUrls = [
+    `https://query1.finance.yahoo.com/v7/finance/options/${symbol}`,
+    `https://query2.finance.yahoo.com/v7/finance/options/${symbol}`
+  ];
+
+  const endpointErrors = [];
+
+  for (const baseUrl of baseUrls) {
+    try {
+      const url = expiration ? `${baseUrl}?date=${Number(expiration)}` : baseUrl;
+      const response = await axios.get(url, {
+        headers: YAHOO_HEADERS,
+        timeout: 10000
+      });
+
+      const result = response.data?.optionChain?.result?.[0];
+      if (result) return result;
+      endpointErrors.push(`${baseUrl}: empty result`);
+    } catch (error) {
+      const status = error?.response?.status;
+      endpointErrors.push(`${baseUrl}: ${status ? `HTTP ${status}` : error.message}`);
+    }
+  }
+
+  throw new Error(`Unable to fetch Yahoo options data (${endpointErrors.join('; ')}).`);
+}
 
 export async function fetchFundamentals(ticker) {
   const symbol = ticker.toUpperCase();
@@ -85,17 +118,13 @@ function normalizeOption(option, type, underlyingPrice, expiryUnix) {
 
 export async function fetchOptionsChain(ticker, expiration) {
   const symbol = ticker.toUpperCase();
-  const baseUrl = `https://query1.finance.yahoo.com/v7/finance/options/${symbol}`;
-
-  const first = await axios.get(baseUrl);
-  const result = first.data?.optionChain?.result?.[0];
+  const result = await getYahooOptionsResult(symbol);
   if (!result) throw new Error('Unable to fetch options chain.');
 
   const expirations = result.expirationDates || [];
   const expiryToUse = expiration ? Number(expiration) : expirations[0];
 
-  const chainResp = await axios.get(`${baseUrl}?date=${expiryToUse}`);
-  const chain = chainResp.data?.optionChain?.result?.[0];
+  const chain = await getYahooOptionsResult(symbol, expiryToUse);
   if (!chain?.options?.[0]) throw new Error('No options found for selected expiry.');
 
   const optionSet = chain.options[0];
