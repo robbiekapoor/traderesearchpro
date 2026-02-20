@@ -3,44 +3,42 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Finance App Dashboard</title>
+    <title>TradeResearch Pro</title>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
-    <main class="dashboard">
+    <main class="app">
       <header class="topbar">
         <div>
-          <h1>Finance App</h1>
-          <p>Track budgets, goals, and spending in one place.</p>
+          <h1>TradeResearch Pro</h1>
+          <p>Search stocks, review fundamentals, and scan options ideas.</p>
         </div>
-        <button class="primary-btn">+ Add Transaction</button>
       </header>
 
-      <section class="summary-grid" aria-label="Account summary">
-        <article class="card">
-          <h2>Current Balance</h2>
-          <p class="value positive" id="current-balance">$0.00</p>
-        </article>
-        <article class="card">
-          <h2>Income (Month)</h2>
-          <p class="value" id="monthly-income">$0.00</p>
-        </article>
-        <article class="card">
-          <h2>Expenses (Month)</h2>
-          <p class="value negative" id="monthly-expenses">$0.00</p>
-        </article>
-        <article class="card">
-          <h2>Savings Goal</h2>
-          <p class="value" id="savings-goal">$0.00</p>
-          <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
-            <div class="progress-fill" id="goal-progress"></div>
-          </div>
-        </article>
+      <section class="search-panel">
+        <form id="ticker-form" class="search-form">
+          <input id="ticker-input" name="ticker" type="text" value="AAPL" placeholder="Search ticker (AAPL, MSFT, TSLA...)" maxlength="10" />
+          <button type="submit">Research</button>
+        </form>
+        <p id="status" class="status">Ready.</p>
       </section>
 
-      <section class="panel">
-        <h2>Recent Transactions</h2>
-        <ul class="transactions" id="transaction-list"></ul>
+      <section class="grid metrics">
+        <article class="card"><h2>Price</h2><p id="m-price">—</p></article>
+        <article class="card"><h2>P/E</h2><p id="m-pe">—</p></article>
+        <article class="card"><h2>EPS</h2><p id="m-eps">—</p></article>
+        <article class="card"><h2>Market Cap</h2><p id="m-cap">—</p></article>
+      </section>
+
+      <section class="grid two-col">
+        <article class="card">
+          <h2>Highlighted Trade Ideas</h2>
+          <ul id="ideas-list" class="list"></ul>
+        </article>
+        <article class="card">
+          <h2>Top Options Contracts</h2>
+          <ul id="options-list" class="list"></ul>
+        </article>
       </section>
     </main>
 

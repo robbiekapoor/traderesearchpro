@@ -49,6 +49,15 @@ PORT=4000
 
 If not provided, Alpha Vantage uses `demo` key fallback.
 
+## Static UI preview
+If you only want to preview the lightweight dashboard UI in this repo (without installing Node dependencies), serve the root `index.html` directly:
+
+```bash
+python -m http.server 4173
+```
+
+Then open `http://localhost:4173`.
+
 ## API endpoints
 - `GET /api/health`
 - `GET /api/stock/:ticker`
