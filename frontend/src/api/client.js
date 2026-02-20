@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:4000/api';
+const API_BASE = (import.meta.env.VITE_API_BASE_URL || '/api').replace(/\/$/, '');
 
 async function parseError(res, fallback) {
   try {
@@ -18,9 +18,10 @@ export async function fetchStock(ticker) {
 }
 
 export async function fetchOptions(ticker, expiration) {
-  const url = new URL(`${API_BASE}/options/${ticker}`);
-  if (expiration) url.searchParams.set('expiration', expiration);
-  const res = await fetch(url.toString());
+  const params = new URLSearchParams();
+  if (expiration) params.set('expiration', expiration);
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const res = await fetch(`${API_BASE}/options/${ticker}${suffix}`);
   if (!res.ok) throw new Error(await parseError(res, 'Failed to fetch options chain'));
   return res.json();
 }
