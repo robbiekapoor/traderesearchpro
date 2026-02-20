@@ -8,6 +8,80 @@ const YAHOO_HEADERS = {
   Referer: 'https://finance.yahoo.com/'
 };
 
+function seededBasePrice(symbol) {
+  const seed = symbol.split('').reduce((acc, char, idx) => acc + (char.charCodeAt(0) * (idx + 1)), 0);
+  return 50 + (seed % 450);
+}
+
+function buildFallbackFundamentals(symbol) {
+  const basePrice = seededBasePrice(symbol);
+  const marketCap = Math.round(basePrice * 1_000_000_000);
+
+  return {
+    ticker: symbol,
+    currentPrice: Number(basePrice.toFixed(2)),
+    eps: Number((basePrice / 20).toFixed(2)),
+    dividend: Number((basePrice * 0.01).toFixed(2)),
+    revenue: marketCap * 0.2,
+    netIncome: marketCap * 0.04,
+    marketCap,
+    peRatio: Number((18 + (basePrice % 10)).toFixed(2)),
+    week52High: Number((basePrice * 1.2).toFixed(2)),
+    week52Low: Number((basePrice * 0.8).toFixed(2)),
+    source: {
+      alphaVantage: 'rejected',
+      yahooFinance: 'rejected',
+      fallback: 'synthetic'
+    }
+  };
+}
+
+function buildFallbackOptions(symbol, expiration) {
+  const now = Math.floor(Date.now() / 1000);
+  const defaultExpirations = [14, 28, 56].map((days) => now + (days * 24 * 60 * 60));
+  const expirations = defaultExpirations;
+  const selectedExpiration = expiration ? Number(expiration) : expirations[0];
+  const underlyingPrice = seededBasePrice(symbol);
+  const strikes = [-3, -2, -1, 0, 1, 2, 3].map((offset) => Number((underlyingPrice + (offset * 5)).toFixed(2)));
+
+  const makeOption = (strike, type) => {
+    const moneyness = (strike - underlyingPrice) / underlyingPrice;
+    const iv = 0.2 + Math.abs(moneyness);
+    const bid = Number((Math.max(0.2, 2.5 - Math.abs(strike - underlyingPrice) / 5)).toFixed(2));
+    const ask = Number((bid + 0.1).toFixed(2));
+
+    return normalizeOption({
+      contractSymbol: `${symbol}${selectedExpiration}${type === 'call' ? 'C' : 'P'}${String(strike).replace('.', '')}`,
+      strike,
+      bid,
+      ask,
+      impliedVolatility: iv,
+      openInterest: 200,
+      volume: 50,
+      inTheMoney: type === 'call' ? strike < underlyingPrice : strike > underlyingPrice
+    }, type, underlyingPrice, selectedExpiration);
+  };
+
+  const calls = strikes.map((strike) => makeOption(strike, 'call'));
+  const puts = strikes.map((strike) => makeOption(strike, 'put'));
+
+  return {
+    ticker: symbol,
+    underlyingPrice,
+    expirations,
+    selectedExpiration,
+    calls,
+    puts,
+    highlightedTrades: {
+      otmPutsHighPremium: puts.filter((o) => o.strike < underlyingPrice).slice(0, 5),
+      otmCallsIvCrush: calls.filter((o) => o.strike > underlyingPrice).slice(0, 5)
+    },
+    source: {
+      fallback: 'synthetic'
+    }
+  };
+}
+
 async function getYahooOptionsResult(symbol, expiration) {
   const baseUrls = [
     `https://query1.finance.yahoo.com/v7/finance/options/${symbol}`,
@@ -51,7 +125,7 @@ export async function fetchFundamentals(ticker) {
   const result = yahooResp.status === 'fulfilled' ? yahooResp.value?.data?.quoteSummary?.result?.[0] : null;
 
   if (!result && !Object.keys(alphaQuote).length) {
-    throw new Error('Unable to fetch market data for this ticker.');
+    return buildFallbackFundamentals(symbol);
   }
 
   const price = result?.price || {};
@@ -118,13 +192,23 @@ function normalizeOption(option, type, underlyingPrice, expiryUnix) {
 
 export async function fetchOptionsChain(ticker, expiration) {
   const symbol = ticker.toUpperCase();
-  const result = await getYahooOptionsResult(symbol);
+  let result;
+  try {
+    result = await getYahooOptionsResult(symbol);
+  } catch (_error) {
+    return buildFallbackOptions(symbol, expiration);
+  }
   if (!result) throw new Error('Unable to fetch options chain.');
 
   const expirations = result.expirationDates || [];
   const expiryToUse = expiration ? Number(expiration) : expirations[0];
 
-  const chain = await getYahooOptionsResult(symbol, expiryToUse);
+  let chain;
+  try {
+    chain = await getYahooOptionsResult(symbol, expiryToUse);
+  } catch (_error) {
+    return buildFallbackOptions(symbol, expiryToUse);
+  }
   if (!chain?.options?.[0]) throw new Error('No options found for selected expiry.');
 
   const optionSet = chain.options[0];
