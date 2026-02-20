@@ -1,56 +1,40 @@
-# TradeResearch Pro
+# Options + Stock Research Tracker
 
-Full-stack stock and options research app.
-
-## Stack
-- Frontend: React + TailwindCSS + Vite
-- Backend: Node.js + Express
-- Data providers: Yahoo Finance + Alpha Vantage (example integrated)
+A Streamlit app for researching:
+- **Options sensitivity** using Black-Scholes Greeks (Delta, Gamma, Theta, Vega, Rho)
+- **Stock fundamentals** such as EPS, P/E, revenue, net profit, dividends, ROE, and debt/equity
+- **Idea tracking** with a local watchlist editor
 
 ## Features
-- Ticker search (AAPL/MSFT/TSLA/etc.)
-- Fundamentals:
-  - Current price
-  - EPS
-  - Dividend
-  - Revenue
-  - Profit / Net Income
-  - Market Cap
-  - P/E ratio
-  - 52-week high/low
-- Options chain:
-  - Expiration selector
-  - Calls and puts with bid/ask, IV
-  - Greeks: Delta, Gamma, Theta, Vega, Rho
-  - Probability ITM
-- Trade ideas:
-  - OTM puts with high premium
-  - OTM calls with IV crush potential
-  - Delta filtering
-- Scoring model based on premium/day, volatility, risk, liquidity
-- Risk labels (green/yellow/red)
+
+1. **Dashboard**
+   - Quick snapshot of your watchlist and status breakdown.
+
+2. **Options Greeks Calculator**
+   - Enter spot, strike, DTE, risk-free rate, volatility, and option type.
+   - Get real-time Greek estimates.
+
+3. **Fundamental Research**
+   - Pulls data from Yahoo Finance (`yfinance`) for a ticker.
+   - Computes a simple investment quality score out of 100.
+   - Displays 1-year price chart.
+
+4. **Watchlist Tracker**
+   - Add/update research ideas with thesis, target, stop, and status.
+   - Saves entries to `data/watchlist.csv`.
 
 ## Run locally
-```bash
-npm install
-npm start
-```
-
-- Frontend runs on `http://localhost:5173`
-- Backend runs on `http://localhost:4000`
-
-## Environment variables
-Create `backend/.env` (optional):
 
 ```bash
-ALPHA_VANTAGE_API_KEY=your_key_here
-PORT=4000
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+streamlit run app.py
 ```
 
-If not provided, Alpha Vantage uses `demo` key fallback.
+Then open the URL shown in terminal (usually `http://localhost:8501`).
 
-## API endpoints
-- `GET /api/health`
-- `GET /api/stock/:ticker`
-- `GET /api/options/:ticker?expiration=<unix_ts>`
+## Notes
 
+- Greeks are model outputs under Black-Scholes assumptions and should be used as guidance, not certainty.
+- Fundamental scoring is intentionally simple and should be customized for your style.
