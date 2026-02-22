@@ -1,12 +1,41 @@
-import axios from 'axios';
+import YahooFinance from 'yahoo-finance2';
+const yahooFinance = new YahooFinance();
+import NodeCache from 'node-cache';
 import { calculateGreeks, daysToExpiry } from '../utils/greeks.js';
 
-const ALPHA_API_KEY = process.env.ALPHA_VANTAGE_API_KEY || 'demo';
-const YAHOO_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-  Accept: 'application/json,text/plain,*/*',
-  Referer: 'https://finance.yahoo.com/'
-};
+const optionsCache = new NodeCache({ stdTTL: 300, checkperiod: 60 });
+const fundamentalsCache = new NodeCache({ stdTTL: 120, checkperiod: 60 });
+
+// Strict attempt tracking: stop hitting Yahoo after 5 failures
+let yahooFailures = 0;
+const MAX_FAILURES = 5;
+let yahooDisabledUntil = 0;
+const COOLDOWN_MS = 30 * 60 * 1000; // 30 min cooldown after 5 failures
+
+function isYahooAvailable() {
+  if (yahooFailures < MAX_FAILURES) return true;
+  if (Date.now() > yahooDisabledUntil) {
+    yahooFailures = 0;
+    console.log('[Yahoo] Cooldown expired, re-enabling API calls');
+    return true;
+  }
+  return false;
+}
+
+function recordYahooFailure(err) {
+  yahooFailures++;
+  console.log(`[Yahoo] Failure ${yahooFailures}/${MAX_FAILURES}: ${err.message}`);
+  if (yahooFailures >= MAX_FAILURES) {
+    yahooDisabledUntil = Date.now() + COOLDOWN_MS;
+    console.log(`[Yahoo] Max failures reached. Disabled for 30 minutes. Using fallback data.`);
+  }
+}
+
+function recordYahooSuccess() {
+  yahooFailures = 0;
+}
+
+// ── Fallback data generators ──
 
 function seededBasePrice(symbol) {
   const seed = symbol.split('').reduce((acc, char, idx) => acc + (char.charCodeAt(0) * (idx + 1)), 0);
@@ -28,11 +57,7 @@ function buildFallbackFundamentals(symbol) {
     peRatio: Number((18 + (basePrice % 10)).toFixed(2)),
     week52High: Number((basePrice * 1.2).toFixed(2)),
     week52Low: Number((basePrice * 0.8).toFixed(2)),
-    source: {
-      alphaVantage: 'rejected',
-      yahooFinance: 'rejected',
-      fallback: 'synthetic'
-    }
+    source: { fallback: 'synthetic' }
   };
 }
 
@@ -76,80 +101,11 @@ function buildFallbackOptions(symbol, expiration) {
       otmPutsHighPremium: puts.filter((o) => o.strike < underlyingPrice).slice(0, 5),
       otmCallsIvCrush: calls.filter((o) => o.strike > underlyingPrice).slice(0, 5)
     },
-    source: {
-      fallback: 'synthetic'
-    }
+    source: { fallback: 'synthetic' }
   };
 }
 
-async function getYahooOptionsResult(symbol, expiration) {
-  const baseUrls = [
-    `https://query1.finance.yahoo.com/v7/finance/options/${symbol}`,
-    `https://query2.finance.yahoo.com/v7/finance/options/${symbol}`
-  ];
-
-  const endpointErrors = [];
-
-  for (const baseUrl of baseUrls) {
-    try {
-      const url = expiration ? `${baseUrl}?date=${Number(expiration)}` : baseUrl;
-      const response = await axios.get(url, {
-        headers: YAHOO_HEADERS,
-        timeout: 10000
-      });
-
-      const result = response.data?.optionChain?.result?.[0];
-      if (result) return result;
-      endpointErrors.push(`${baseUrl}: empty result`);
-    } catch (error) {
-      const status = error?.response?.status;
-      endpointErrors.push(`${baseUrl}: ${status ? `HTTP ${status}` : error.message}`);
-    }
-  }
-
-  throw new Error(`Unable to fetch Yahoo options data (${endpointErrors.join('; ')}).`);
-}
-
-export async function fetchFundamentals(ticker) {
-  const symbol = ticker.toUpperCase();
-
-  // Example Alpha Vantage usage for real-time quote
-  const alphaQuoteUrl = `https://www.alphavantage.co/query?function=GLOBAL_QUOTE&symbol=${symbol}&apikey=${ALPHA_API_KEY}`;
-
-  // Example Yahoo Finance fundamentals endpoint
-  const yahooSummaryUrl = `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${symbol}?modules=price,summaryDetail,defaultKeyStatistics,financialData`;
-
-  const [alphaResp, yahooResp] = await Promise.allSettled([axios.get(alphaQuoteUrl), axios.get(yahooSummaryUrl)]);
-
-  const alphaQuote = alphaResp.status === 'fulfilled' ? alphaResp.value?.data?.['Global Quote'] || {} : {};
-  const result = yahooResp.status === 'fulfilled' ? yahooResp.value?.data?.quoteSummary?.result?.[0] : null;
-
-  if (!result && !Object.keys(alphaQuote).length) {
-    return buildFallbackFundamentals(symbol);
-  }
-
-  const price = result?.price || {};
-  const summary = result?.summaryDetail || {};
-  const stats = result?.defaultKeyStatistics || {};
-  const financial = result?.financialData || {};
-
-  return {
-    ticker: symbol,
-    currentPrice: Number(price.regularMarketPrice?.raw ?? alphaQuote['05. price'] ?? 0),
-    eps: Number(stats.trailingEps?.raw ?? 0),
-    dividend: Number(summary.dividendRate?.raw ?? 0),
-    revenue: Number(financial.totalRevenue?.raw ?? 0),
-    netIncome: Number(financial.netIncomeToCommon?.raw ?? 0),
-    marketCap: Number(price.marketCap?.raw ?? 0),
-    peRatio: Number(summary.trailingPE?.raw ?? 0),
-    week52High: Number(summary.fiftyTwoWeekHigh?.raw ?? 0),
-    week52Low: Number(summary.fiftyTwoWeekLow?.raw ?? 0),
-    source: {
-      alphaVantage: alphaResp.status,
-      yahooFinance: yahooResp.status
-    }
-  };
-}
+// ── Normalize + enrich option data ──
 
 function normalizeOption(option, type, underlyingPrice, expiryUnix) {
   const iv = option.impliedVolatility ?? 0;
@@ -190,51 +146,167 @@ function normalizeOption(option, type, underlyingPrice, expiryUnix) {
   };
 }
 
+// ── Public API: Fundamentals ──
+
+export async function fetchFundamentals(ticker) {
+  const symbol = ticker.toUpperCase();
+  const cacheKey = `fundamentals_${symbol}`;
+
+  const cached = fundamentalsCache.get(cacheKey);
+  if (cached) {
+    console.log(`[Cache Hit] Fundamentals for ${symbol}`);
+    return { ...cached, cached: true, cachedAt: cached._cachedAt };
+  }
+
+  if (!isYahooAvailable()) {
+    console.log(`[Yahoo Disabled] Using fallback for ${symbol} fundamentals`);
+    return buildFallbackFundamentals(symbol);
+  }
+
+  try {
+    console.log(`[Yahoo] Fetching fundamentals for ${symbol}...`);
+    const quote = await yahooFinance.quote(symbol);
+    recordYahooSuccess();
+
+    const price = quote.regularMarketPrice ?? 0;
+    let divRate = quote.dividendRate
+      ?? quote.trailingAnnualDividendRate
+      ?? 0;
+    let divYieldRaw = quote.dividendYield
+      ?? quote.trailingAnnualDividendYield
+      ?? 0;
+
+    // Normalize yield to percentage (e.g. 0.39 means 0.39%)
+    // yahoo-finance2 returns decimals like 0.0039 for 0.39%
+    let divYield = divYieldRaw > 0 && divYieldRaw < 1
+      ? divYieldRaw * 100
+      : divYieldRaw;
+
+    if (!divRate && divYield > 0 && price > 0) {
+      divRate = price * (divYield / 100);
+    }
+    if (divRate > 0 && !divYield && price > 0) {
+      divYield = (divRate / price) * 100;
+    }
+
+    const data = {
+      ticker: symbol,
+      displayName: quote.shortName || quote.longName || symbol,
+      quoteType: quote.quoteType || 'EQUITY',
+      currentPrice: price,
+      open: quote.regularMarketOpen ?? 0,
+      dayHigh: quote.regularMarketDayHigh ?? 0,
+      dayLow: quote.regularMarketDayLow ?? 0,
+      volume: quote.regularMarketVolume ?? 0,
+      previousClose: quote.regularMarketPreviousClose ?? 0,
+      dayChange: quote.regularMarketChange ?? 0,
+      dayChangePercent: quote.regularMarketChangePercent ?? 0,
+      eps: quote.epsTrailingTwelveMonths ?? 0,
+      beta: quote.beta ?? 0,
+      dividend: divRate,
+      dividendYield: divYield,
+      revenue: quote.revenue ?? 0,
+      netIncome: 0,
+      marketCap: quote.marketCap ?? 0,
+      peRatio: quote.trailingPE ?? 0,
+      forwardPE: quote.forwardPE ?? 0,
+      week52High: quote.fiftyTwoWeekHigh ?? 0,
+      week52Low: quote.fiftyTwoWeekLow ?? 0,
+      fiftyDayAvg: quote.fiftyDayAverage ?? 0,
+      twoHundredDayAvg: quote.twoHundredDayAverage ?? 0,
+      avgVolume: quote.averageDailyVolume3Month ?? 0,
+      source: { yahooFinance: 'success', real: true },
+      _cachedAt: new Date().toISOString()
+    };
+
+    fundamentalsCache.set(cacheKey, data);
+    console.log(`[Cache Miss] Fetched and cached fundamentals for ${symbol}`);
+    return { ...data, cached: false };
+  } catch (err) {
+    recordYahooFailure(err);
+    return buildFallbackFundamentals(symbol);
+  }
+}
+
+// ── Public API: Options Chain ──
+
 export async function fetchOptionsChain(ticker, expiration) {
   const symbol = ticker.toUpperCase();
-  let result;
-  try {
-    result = await getYahooOptionsResult(symbol);
-  } catch (_error) {
+  const cacheKey = `options_${symbol}_${expiration || 'default'}`;
+
+  const cached = optionsCache.get(cacheKey);
+  if (cached) {
+    console.log(`[Cache Hit] Options chain for ${symbol} (exp: ${expiration || 'default'})`);
+    return { ...cached, cached: true, cachedAt: cached._cachedAt };
+  }
+
+  if (!isYahooAvailable()) {
+    console.log(`[Yahoo Disabled] Using fallback for ${symbol} options`);
     return buildFallbackOptions(symbol, expiration);
   }
-  if (!result) throw new Error('Unable to fetch options chain.');
 
-  const expirations = result.expirationDates || [];
-  const expiryToUse = expiration ? Number(expiration) : expirations[0];
-
-  let chain;
   try {
-    chain = await getYahooOptionsResult(symbol, expiryToUse);
-  } catch (_error) {
-    return buildFallbackOptions(symbol, expiryToUse);
+    console.log(`[Yahoo] Fetching options chain for ${symbol}...`);
+    const queryOpts = {};
+    if (expiration) queryOpts.date = new Date(Number(expiration) * 1000);
+
+    const result = await yahooFinance.options(symbol, queryOpts);
+    recordYahooSuccess();
+
+    if (!result || !result.options || result.options.length === 0) {
+      console.log(`[Yahoo] No options data returned for ${symbol}`);
+      return buildFallbackOptions(symbol, expiration);
+    }
+
+    const expirations = (result.expirationDates || []).map(d =>
+      Math.floor(new Date(d).getTime() / 1000)
+    );
+    const optionSet = result.options[0];
+    const underlyingPrice = result.quote?.regularMarketPrice ?? 0;
+    const expiryToUse = expiration ? Number(expiration) : expirations[0];
+
+    const mapOption = (o, type) => normalizeOption({
+      contractSymbol: o.contractSymbol,
+      strike: o.strike,
+      bid: o.bid ?? 0,
+      ask: o.ask ?? 0,
+      impliedVolatility: o.impliedVolatility ?? 0,
+      openInterest: o.openInterest ?? 0,
+      volume: o.volume ?? 0,
+      inTheMoney: o.inTheMoney ?? false
+    }, type, underlyingPrice, expiryToUse);
+
+    const calls = (optionSet.calls || []).map((o) => mapOption(o, 'call'));
+    const puts = (optionSet.puts || []).map((o) => mapOption(o, 'put'));
+
+    const highlightedTrades = {
+      otmPutsHighPremium: puts
+        .filter((o) => o.strike < underlyingPrice && !o.inTheMoney)
+        .sort((a, b) => b.premiumPerDay - a.premiumPerDay)
+        .slice(0, 5),
+      otmCallsIvCrush: calls
+        .filter((o) => o.strike > underlyingPrice && !o.inTheMoney)
+        .sort((a, b) => (b.impliedVolatility - a.impliedVolatility) || (b.score - a.score))
+        .slice(0, 5)
+    };
+
+    const data = {
+      ticker: symbol,
+      underlyingPrice,
+      expirations,
+      selectedExpiration: expiryToUse,
+      calls,
+      puts,
+      highlightedTrades,
+      source: { yahooFinance: 'success', real: true },
+      _cachedAt: new Date().toISOString()
+    };
+
+    optionsCache.set(cacheKey, data);
+    console.log(`[Cache Miss] Fetched and cached options chain for ${symbol} (${calls.length} calls, ${puts.length} puts)`);
+    return { ...data, cached: false };
+  } catch (err) {
+    recordYahooFailure(err);
+    return buildFallbackOptions(symbol, expiration);
   }
-  if (!chain?.options?.[0]) throw new Error('No options found for selected expiry.');
-
-  const optionSet = chain.options[0];
-  const underlyingPrice = chain.quote?.regularMarketPrice ?? result.quote?.regularMarketPrice ?? 0;
-
-  const calls = (optionSet.calls || []).map((o) => normalizeOption(o, 'call', underlyingPrice, expiryToUse));
-  const puts = (optionSet.puts || []).map((o) => normalizeOption(o, 'put', underlyingPrice, expiryToUse));
-
-  const highlightedTrades = {
-    otmPutsHighPremium: puts
-      .filter((o) => o.strike < underlyingPrice && !o.inTheMoney)
-      .sort((a, b) => b.premiumPerDay - a.premiumPerDay)
-      .slice(0, 5),
-    otmCallsIvCrush: calls
-      .filter((o) => o.strike > underlyingPrice && !o.inTheMoney)
-      .sort((a, b) => (b.impliedVolatility - a.impliedVolatility) || (b.score - a.score))
-      .slice(0, 5)
-  };
-
-  return {
-    ticker: symbol,
-    underlyingPrice,
-    expirations,
-    selectedExpiration: expiryToUse,
-    calls,
-    puts,
-    highlightedTrades
-  };
 }

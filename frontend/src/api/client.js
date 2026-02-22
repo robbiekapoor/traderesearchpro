@@ -25,3 +25,13 @@ export async function fetchOptions(ticker, expiration) {
   if (!res.ok) throw new Error(await parseError(res, 'Failed to fetch options chain'));
   return res.json();
 }
+
+export async function fetchAnalysis({ question, ticker, fundamentals, options }) {
+  const res = await fetch(`${API_BASE}/analyze`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question, ticker, fundamentals, options })
+  });
+  if (!res.ok) throw new Error(await parseError(res, 'Failed to get AI analysis'));
+  return res.json();
+}
